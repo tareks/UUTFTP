@@ -126,9 +126,15 @@ struct tftp_conn *tftp_connect(int type, char *fname, char *mode,
  */
 int tftp_send_rrq(struct tftp_conn *tc)
 {
-	/* struct tftp_rrq *rrq; */
-
-        /* ... */
+	/* struct tftp_rrq *rrq; */ 
+	/* Send opcode 1 (2 bytes) + Filename (string) + "0" (1 byte) + Mode (string) + "0" (1 byte) */
+	struct tftp_rrq rrq;
+   
+   
+   rrq.opcode = OPCODE_RRQ;
+   sprintf(tc->msgbuf,"%s%s",tc->fname,tc->mode);
+   memcpy(rrq.req, tc->msgbuf, strlen(tc->msgbuf));
+   
 
         return 0;
 }
@@ -142,6 +148,7 @@ int tftp_send_rrq(struct tftp_conn *tc)
 int tftp_send_wrq(struct tftp_conn *tc)
 {
 	/* struct tftp_wrq *wrq; */
+	/* Send opcode 2 (2 bytes) + Filename (string) + "0" (1 byte) + Mode (string) + "0" (1 byte) */
 
         /* ... */
 
@@ -158,6 +165,7 @@ int tftp_send_wrq(struct tftp_conn *tc)
 int tftp_send_ack(struct tftp_conn *tc)
 {
 	/* struct tftp_ack *ack; */
+   /* Send opcode 3 (2 bytes) + Block # (2 bytes) */
         
         return 0;
 }
@@ -178,6 +186,8 @@ int tftp_send_ack(struct tftp_conn *tc)
 int tftp_send_data(struct tftp_conn *tc, int length)
 {	
 	/* struct tftp_data *tdata; */
+	/* Send opcode 4 (2 bytes) + Block # (2 bytes) + Data (512 bytes, except last chunk) */
+	
         return 0;
 }
 
