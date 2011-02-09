@@ -13,9 +13,14 @@
 #include <fcntl.h>
 #include <sys/select.h>
 
+#include <errno.h>
+#include <arpa/inet.h>
+
+
 #include "tftp.h"
 
 extern int h_errno;
+extern int errno;
 
 #define TFTP_TYPE_GET 0
 #define TFTP_TYPE_PUT 1
@@ -23,6 +28,11 @@ extern int h_errno;
 /* Should cover most needs */
 #define MSGBUF_SIZE (TFTP_DATA_HDR_LEN + BLOCK_SIZE)
 
+#ifdef DEBUG
+int dbgflag = 1;
+#else
+int dbgflag = 0;
+#endif
 
 /* 
  * NOTE:
@@ -61,7 +71,12 @@ struct tftp_conn *tftp_connect(int type, char *fname, char *mode,
 {
 	struct hostent *hent;
 	struct tftp_conn *tc;
-	
+        struct addrinfo hints;
+        struct addrinfo *servinfo; 
+	int sockfd;
+        int status;
+	char servportstr[4];
+
 	if (!fname || !mode || !hostname)
 		return NULL;
 
@@ -72,8 +87,34 @@ struct tftp_conn *tftp_connect(int type, char *fname, char *mode,
 
 	/* Create a socket. 
 	 * Check return value. */
+       
+        /*  TAREK - getaddrinfo() first, then create socket() */
+	memset(&hints, 0, sizeof hints); 
+	hints.ai_family = AF_INET;       // force IPv4 address
+	hints.ai_socktype = SOCK_DGRAM; 
+	hints.ai_flags = AI_PASSIVE;     // Not sure about this, what if we have multi IFs?
+	sprintf(servportstr,"%d", TFTP_PORT);
+	if ((status = getaddrinfo(hostname, servportstr, &hints, &servinfo)) != 0) {
+    		fprintf(stderr, "getaddrinfo error: %s\n", gai_strerror(status));
+    		return NULL;
+	} 
 
-	/* ... */
+	sockfd = socket(servinfo->ai_family, servinfo->ai_socktype, servinfo->ai_protocol);
+	if (sockfd == -1) {
+		fprintf(stderr,"Error creating socket: %d\n", errno);
+		return NULL;
+	}
+        tc->sock = sockfd;
+
+	if (dbgflag) { 
+		struct sockaddr_in *localip =  (struct sockaddr_in *)servinfo->ai_addr;
+		char ipstr[20];
+		void *addr = NULL;
+		addr = &(localip->sin_addr);
+		inet_ntop(servinfo->ai_family, addr, ipstr, sizeof ipstr);
+		printf("Created socket to %s:%s from %s:\n", 
+				hostname, servportstr, ipstr);
+	}
 
 	if (type == TFTP_TYPE_PUT)
 		tc->fp = fopen(fname, "rb");
@@ -95,6 +136,17 @@ struct tftp_conn *tftp_connect(int type, char *fname, char *mode,
 	 * If error, gracefully clean up.*/
 
 	/* ... */
+	/* TAREK - Already did this above before socket()
+         * using getaddr() but using gethostbyname() to fill
+         * hent as needed below..
+         */
+        hent = gethostbyname(hostname);
+	if (!hent) {
+		fprintf(stderr, "Error gethostbyname(), code=%d\n", h_errno);	
+                close(tc->sock);
+                free(tc);
+                return NULL;
+	}
 
 	/* Assign address to the connection handle.
 	 * You can assume that the first address in the hostent
@@ -105,7 +157,7 @@ struct tftp_conn *tftp_connect(int type, char *fname, char *mode,
 	
 	memcpy(&tc->peer_addr.sin_addr, 
 	       hent->h_addr_list[0], sizeof(struct in_addr));
-	
+
 	tc->addrlen = sizeof(struct sockaddr_in);
 
 	tc->type = type;
@@ -201,6 +253,7 @@ int tftp_transfer(struct tftp_conn *tc)
 	int len;
 	int totlen = 0;
 	struct timeval timeout;
+	fd_set fds;
 
         /* Sanity check */
 	if (!tc)
@@ -220,6 +273,23 @@ int tftp_transfer(struct tftp_conn *tc)
          * the corresponding request. */
 
         /* ... */
+	/* TAREK - check if this is a GET or PUT */
+	switch (tc->type) {
+		case TFTP_TYPE_GET:
+			/* GET means we send a Read Request */
+			tftp_send_rrq(tc);
+			break;
+		case TFTP_TYPE_PUT: 
+			/* PUT means we send a Write Request */
+			tftp_send_wrq(tc);
+			break;
+		default: /* Should never happen */
+			goto out; /* FIXME - print error? */
+			break;
+	}
+
+	FD_ZERO(&fds);
+	FD_SET(tc->sock, &fds);
 
         /*
           Put or get the file, block by block, in a loop.
@@ -229,7 +299,21 @@ int tftp_transfer(struct tftp_conn *tc)
                  * 'select'). If a timeout occurs, resend last block
                  * or ack depending on whether we are in put or get
                  * mode. */
-
+		retval = select(tc->sock+1, &fds , NULL,NULL, &timeout);
+		if (retval == -1) {
+			fprintf(stderr, "Error in select: %d\n", retval);	
+			goto out;
+		} else if (retval == 0) {
+			/* TODO - timeout */
+		} else {
+			/* Read msg data into tc->msg, parse OPCODE & data */
+			if (FD_ISSET(tc->sock, &fds)) {
+				len = recv(tc->sock, tc->msgbuf, MSGBUF_SIZE,0);
+				if (!len) goto out;
+			}
+			
+			printf("Recv() got %d\n", len);
+		}
                 /* ... */
 
                 /* 2. Check the message type and take the necessary
