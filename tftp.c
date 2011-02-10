@@ -16,7 +16,6 @@
 #include <errno.h>
 #include <arpa/inet.h>
 
-
 #include "tftp.h"
 
 extern int h_errno;
@@ -33,6 +32,8 @@ int dbgflag = 1;
 #else
 int dbgflag = 0;
 #endif
+
+size_t maxfnamelen=12;
 
 /* 
  * NOTE:
@@ -178,15 +179,23 @@ struct tftp_conn *tftp_connect(int type, char *fname, char *mode,
  */
 int tftp_send_rrq(struct tftp_conn *tc)
 {
-	/* struct tftp_rrq *rrq; */ 
+	struct tftp_rrq *rrq;
 	/* Send opcode 1 (2 bytes) + Filename (string) + "0" (1 byte) + Mode (string) + "0" (1 byte) */
-	struct tftp_rrq rrq;
-   
-   
-   rrq.opcode = OPCODE_RRQ;
-   sprintf(tc->msgbuf,"%s%s",tc->fname,tc->mode);
-   memcpy(rrq.req, tc->msgbuf, strlen(tc->msgbuf));
-   
+	int ret =0;
+   	
+	rrq = (struct tftp_rrq *) calloc(1, TFTP_RRQ_LEN(tc->fname, tc->mode));
+
+   	rrq->opcode = htons(OPCODE_RRQ);
+   	snprintf(rrq->req,MSGBUF_SIZE, "%s%c%s%c",tc->fname, NULL, tc->mode, NULL);
+   	
+	ret=sendto(tc->sock, rrq->req, strlen(rrq->req)+1, 0, (struct sockaddr*)&tc->peer_addr, sizeof(tc->peer_addr));
+	if (ret == -1) {
+		fprintf(stderr, "sento() failed while sending RRQ with %d\n", errno);
+		free(rrq);
+		return 1;
+	}	
+ 
+	free(rrq);	
 
         return 0;
 }
@@ -243,6 +252,12 @@ int tftp_send_data(struct tftp_conn *tc, int length)
         return 0;
 }
 
+int tftp_handle_error(int opcode, char *msgbuf)
+{	
+
+        return 0;
+}
+
 /*
   Transfer a file to or from the server.
 
@@ -254,6 +269,8 @@ int tftp_transfer(struct tftp_conn *tc)
 	int totlen = 0;
 	struct timeval timeout;
 	fd_set fds;
+	int fromaddrlen=0;
+	u_int16_t opcode = 0;
 
         /* Sanity check */
 	if (!tc)
@@ -308,17 +325,29 @@ int tftp_transfer(struct tftp_conn *tc)
 		} else {
 			/* Read msg data into tc->msg, parse OPCODE & data */
 			if (FD_ISSET(tc->sock, &fds)) {
-				len = recv(tc->sock, tc->msgbuf, MSGBUF_SIZE,0);
-				if (!len) goto out;
+				len = recvfrom(tc->sock, tc->msgbuf, MSGBUF_SIZE,0, (struct sockaddr *)&tc->peer_addr, &fromaddrlen);
+				if ( (len == 0) || (len == -1) ) {
+					fprintf(stderr, "Error receiving data from recvfrom %d\n", errno);
+					goto out;
+				}
 			}
 			
-			printf("Recv() got %d\n", len);
+			printf("Recvfrom() got %d bytes.\n", len);
 		}
                 /* ... */
-
+		memcpy((void *)&opcode, tc->msgbuf+1, sizeof(u_int8_t) *1); /* Get first 2 bytes */
+{
+int x;
+for (x=0; x < len; x++) 
+printf("%x ", tc->msgbuf[x]);
+printf("\n");
+}
+		ntohs(opcode);
+printf("got opcode =%d\n",opcode);
+		
                 /* 2. Check the message type and take the necessary
                  * action. */
-		switch ( 0 /* change for msg type */ ) {
+		switch ( opcode ) {
 		case OPCODE_DATA:
                         /* Received data block, send ack */
 			break;
@@ -327,6 +356,7 @@ int tftp_transfer(struct tftp_conn *tc)
 			break;
 		case OPCODE_ERR:
                         /* Handle error... */
+			tftp_handle_error(opcode, tc->msgbuf);
                         break;
 		default:
 			fprintf(stderr, "\nUnknown message type\n");
@@ -377,6 +407,8 @@ int main (int argc, char **argv)
 			progname);
 		return -1;
 	}
+
+	/* TODO - sanity check for fname, hostname */
 
         /* Connect to the remote server */
 	tc = tftp_connect(type, fname, MODE_OCTET, hostname);
