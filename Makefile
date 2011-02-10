@@ -7,7 +7,7 @@ TARGET := tftp
 
 .PHONY: depend clean
 
-DEFS=-Wall
+DEFS=-Wall -g -DDEBUG
 
 # Automatically detect SunOS or Linux:
 ifeq ($(OS),SunOS)
@@ -28,7 +28,7 @@ depend:
 	makedepend -Y./ $(SRC) &> /dev/null
 
 clean:
-	rm -f $(OBJ) $(TARGET) *~
+	rm -f $(OBJ) $(TARGET) *~ core*
 
 # DO NOT DELETE
 
