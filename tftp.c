@@ -383,7 +383,7 @@ int tftp_recv_data(struct tftp_conn *tc, int length)
 	}		
 
 	if (length-4 < BLOCK_SIZE) { /* subtract opcode and block num - last block */
-	printf ("Receive complete file !\n");
+	printf ("Received complete file !\n");
 		return 1; /* Close file & return */
 	}
 
@@ -401,7 +401,7 @@ int tftp_handle_error(char *msgbuf, int len)
 
 	memcpy((void *)&errnum, msgbuf+3, sizeof(u_int8_t)); /* Get byte 4*/
 	memcpy((void *)&errmsg, msgbuf+4, sizeof(u_int8_t) *(len - 4)); /* Get byte 4*/
-	fprintf(stderr, "TFTP error message : %d, %s\n", errnum, errmsg);
+	fprintf(stderr, "TFTP Error:%d:%s.\n", errnum, errmsg);
 			 	
         return 0;
 }
@@ -475,17 +475,21 @@ int tftp_transfer(struct tftp_conn *tc)
 			goto out;
 		} else if (retval == 0) {
 			/* timeout resend or ack depending on mode*/
+			fprintf(stderr, "Timeout\n");
 			switch (tc->type) {
 				case TFTP_TYPE_GET:
 					if (opcode == 0) // RRQ was lost. resend it
 						tftp_send_rrq(tc);
 					else {
+						tc->blocknr--;
+printf("Resending ACK for block num %d\n", tc->blocknr);
 						// timeout in between DATA packets
 						if (tftp_send_ack(tc)) {
 							fprintf(stderr, "recv_data(): tftp_send_ack() failed.\n"); 
 							goto out;
 						}		
 					}	
+					continue;
 				break;
 				case TFTP_TYPE_PUT: 
 						if (opcode == 0)  // WRQ was lost, resend it
@@ -504,12 +508,12 @@ int tftp_transfer(struct tftp_conn *tc)
 								}
 							}
 						}
+						continue;
 				break;
 				default: /* Should never happen */
 					goto out; /* FIXME - print error? */
 				break;
 			}
-			fprintf(stderr, "Timeout\n");
 		} else {
 			/* Read msg data into tc->msg, parse OPCODE & data */
 			if (FD_ISSET(tc->sock, &fds)) {
@@ -521,22 +525,22 @@ int tftp_transfer(struct tftp_conn *tc)
 			}
 			
 			printf("Recvfrom() got %d bytes.\n", bytesrecvd);
-		}
-		memcpy((void *)&opcode, tc->msgbuf, sizeof(u_int8_t) *2); /* Get opcode */
-		opcode = ntohs(opcode);
-
-//inet_ntoa(tc->peer_addr.sin_addr);
-//printf ("Address len=%d, :%s\n2", fromaddrlen, inet_ntoa(tc->peer_addr.sin_addr));		
-//printf ("Sin port :%d\n2", ntohs(tc->peer_addr.sin_port));
-
-
 {
 int x;
 for (x=0; x < bytesrecvd; x++) 
 printf("%x ", tc->msgbuf[x]);
 printf("\n");
 }
+		memcpy((void *)&opcode, tc->msgbuf, sizeof(u_int8_t) *2); /* Get opcode */
+		opcode = ntohs(opcode);
 printf("transfer() got opcode =%d\n",opcode);
+		}
+
+//inet_ntoa(tc->peer_addr.sin_addr);
+//printf ("Address len=%d, :%s\n2", fromaddrlen, inet_ntoa(tc->peer_addr.sin_addr));		
+//printf ("Sin port :%d\n2", ntohs(tc->peer_addr.sin_port));
+
+
 		
                 /* 2. Check the message type and take the necessary
                  * action. */
