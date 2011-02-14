@@ -7,7 +7,7 @@ TARGET := tftp
 
 .PHONY: depend clean
 
-DEFS=-Wall -g -DDEBUG
+DEFS=-Wall 
 
 # Automatically detect SunOS or Linux:
 ifeq ($(OS),SunOS)
