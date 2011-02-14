@@ -15,6 +15,7 @@
 
 #include <errno.h>
 #include <arpa/inet.h>
+#include <strings.h>
 
 #include "tftp.h"
 
@@ -320,23 +321,26 @@ printf("\n");
 int tftp_send_data(struct tftp_conn *tc, int length)
 {	
 	struct tftp_data *tdata;
-	u_int8_t sentbytes = 0;
-	u_int16_t packet_len = TFTP_DATA_HDR_LEN + (length * sizeof(u_int8_t));
+	ssize_t sentbytes = 0;
+	u_int16_t packet_len = TFTP_DATA_HDR_LEN + ((length<0?-length:length) * sizeof(u_int8_t));
 	void *data = calloc (1, packet_len);
 	if (!data) return 1;
 
 	tdata = (struct tftp_data *) data;
-
+		
 	tdata->opcode = htons((u_int16_t) OPCODE_DATA);
-
+printf("send_data(): we need to send %d bytes, packetlen=%d...\n", length, packet_len);
 	if (length < 0) {
 	/* We either timed out or got a dup ack, seek back and resend last block */
-
-	} else {
+		length=-length;
+		fseek(tc->fp, -length, SEEK_CUR);	
+	} 
+	
 	/* Send incremental blocks until we're out of data  */
-		tdata->blocknr = htons(tc->blocknr);
-		fread(tdata->data, length, 1, tc->fp);
-	}
+	tdata->blocknr = htons(tc->blocknr);
+	bzero(tdata->data, length * sizeof(u_int8_t));
+	fread(tdata->data, sizeof(u_int8_t), length, tc->fp);
+	
 {
 int x;
 printf("sending: opcode=%d, block=%d\n", ntohs(tdata->opcode), ntohs(tdata->blocknr));
@@ -344,7 +348,6 @@ for (x=0; x < length;  x++)
 printf("%x ", tdata->data[x]);
 printf("\n");
 }
-
         sentbytes=sendto(tc->sock, tdata, packet_len, 0, (struct sockaddr*)&tc->peer_addr, sizeof(tc->peer_addr));
         if (sentbytes == -1) {
                 fprintf(stderr, "sento() failed while sending DATA with %d\n", errno);
@@ -376,11 +379,12 @@ int tftp_recv_data(struct tftp_conn *tc, int length)
 	
 	if (tftp_send_ack(tc)) {
 		fprintf(stderr, "recv_data(): tftp_send_ack() failed.\n"); 
-		return 1;
+		return -1;
 	}		
 
-	if (length-4 < 512) { /* subtract opcode and block num - last block */
-		return 0; /* Close file & return */
+	if (length-4 < BLOCK_SIZE) { /* subtract opcode and block num - last block */
+	printf ("Receive complete file !\n");
+		return 1; /* Close file & return */
 	}
 
 	tc->blocknr++;
@@ -414,11 +418,11 @@ int tftp_transfer(struct tftp_conn *tc)
 	int totlen = 0;
 	struct timeval timeout;
 	fd_set fds;
-	socklen_t fromaddrlen=0;
+	socklen_t fromaddrlen=sizeof(struct sockaddr_in);
 	u_int16_t opcode = 0;
 	u_int16_t blocknr = 0;
 
-        /* Sanity check */
+      /* Sanity check */
 	if (!tc)
 		return -1;
 
@@ -470,9 +474,42 @@ int tftp_transfer(struct tftp_conn *tc)
 			fprintf(stderr, "Error in select: %d\n", retval);	
 			goto out;
 		} else if (retval == 0) {
-			/* TODO - timeout resend or ack depending on mode*/
+			/* timeout resend or ack depending on mode*/
+			switch (tc->type) {
+				case TFTP_TYPE_GET:
+					if (opcode == 0) // RRQ was lost. resend it
+						tftp_send_rrq(tc);
+					else {
+						// timeout in between DATA packets
+						if (tftp_send_ack(tc)) {
+							fprintf(stderr, "recv_data(): tftp_send_ack() failed.\n"); 
+							goto out;
+						}		
+					}	
+				break;
+				case TFTP_TYPE_PUT: 
+						if (opcode == 0)  // WRQ was lost, resend it
+							tftp_send_wrq(tc);
+						else {
+							if (blocknr != tc->blocknr) {
+								printf("Timed out while waiting for ACK for block %d.\n", tc->blocknr);
+							//code to check if bytesleft is bigger than block size 
+							//then we need to split the file into chunks 512
+								if ((retval = tftp_send_data(tc, -(bytesleft<BLOCK_SIZE?bytesleft:BLOCK_SIZE) )) < 0) {
+									printf("Error sending data, resend..\n");
+								}
+								else {
+									printf("Sent %d bytes, %d left\n", retval, bytesleft-retval);
+									bytesleft-=retval;
+								}
+							}
+						}
+				break;
+				default: /* Should never happen */
+					goto out; /* FIXME - print error? */
+				break;
+			}
 			fprintf(stderr, "Timeout\n");
-			goto out; 
 		} else {
 			/* Read msg data into tc->msg, parse OPCODE & data */
 			if (FD_ISSET(tc->sock, &fds)) {
@@ -485,7 +522,14 @@ int tftp_transfer(struct tftp_conn *tc)
 			
 			printf("Recvfrom() got %d bytes.\n", bytesrecvd);
 		}
-		memcpy((void *)&opcode, tc->msgbuf+1, sizeof(u_int8_t) *1); /* Get opcode */
+		memcpy((void *)&opcode, tc->msgbuf, sizeof(u_int8_t) *2); /* Get opcode */
+		opcode = ntohs(opcode);
+
+//inet_ntoa(tc->peer_addr.sin_addr);
+//printf ("Address len=%d, :%s\n2", fromaddrlen, inet_ntoa(tc->peer_addr.sin_addr));		
+//printf ("Sin port :%d\n2", ntohs(tc->peer_addr.sin_port));
+
+
 {
 int x;
 for (x=0; x < bytesrecvd; x++) 
@@ -499,17 +543,27 @@ printf("transfer() got opcode =%d\n",opcode);
 		switch ( opcode ) {
 		case OPCODE_DATA:
                         /* Received data block, send ack */
-			tftp_recv_data(tc, bytesrecvd);
+			if (tftp_recv_data(tc, bytesrecvd)) {
+			goto out;
+			}
 			break;
 		case OPCODE_ACK:
                         /* Received ACK, send next block */
 			memcpy((void *)&blocknr, tc->msgbuf+2, sizeof(u_int8_t)*2); /* Get blocknr */
+			blocknr = ntohs(blocknr);
 			printf("got ACK for blocknumber=%d\n", blocknr);
+			
 			if (blocknr == tc->blocknr) {
-				tc->blocknr++; blocknr++;
+				if (bytesleft == 0) {
+					printf (" File transfer complete !\n");
+					goto out;
+					}
+				tc->blocknr++;
 				printf("Current block ACK'd, increment block number.\n");
 			}
-			if ((retval = tftp_send_data(tc, bytesleft)) < 0) {
+			//code to check if bytesleft is bigger than block size 
+			//then we need to split the file into chunks 512
+			if ((retval = tftp_send_data(tc, (bytesleft<BLOCK_SIZE?bytesleft:BLOCK_SIZE) )) < 0) {
 				printf("Error sending data, resend..\n");
 			}
 			else {
@@ -586,7 +640,7 @@ int main (int argc, char **argv)
 	retval = tftp_transfer(tc);
 	
         if (retval < 0) {
-                fprintf(stderr, "File transfer failed!\n");
+                fprintf(stderr, "File transfer failed!\n");		
         }
 
         /* We are done. Cleanup our state. */
